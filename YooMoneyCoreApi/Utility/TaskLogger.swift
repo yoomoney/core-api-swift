@@ -96,7 +96,8 @@ private extension TaskLogger {
             ")",
             ].joined()),
         ]
-        if let headers = response.allHeaderFields as? [String: Any] {
+        if var headers = response.allHeaderFields as? [String: String] {
+            mockOAuthToken(in: &headers)
             responseLog += [("headers", log(from: headers))]
         }
         if let body = body {

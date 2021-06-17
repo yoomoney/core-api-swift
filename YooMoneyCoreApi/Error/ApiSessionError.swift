@@ -23,9 +23,31 @@
 
 import Foundation
 
-/// Defines methods to handle ApiSession events.
-public protocol ApiSessionDelegate: class {
+/// API Session errors
+///
+/// - illegalUrl: Illegal URL
+/// - host: Host provider error
+/// - canceled: Request canceled
+public enum ApiSessionError: Error {
 
-    /// Called everytime ApiSession rceives a response with one or more HTTP headers
-    func apiSession(_ session: ApiSession, didReceiveResponseWith headers: Headers)
+    /// Illegal URL.
+    case illegalUrl(String)
+
+    /// Host provider error.
+    case host(HostProviderError)
+
+    /// Request canceled.
+    case canceled
+}
+
+// MARK: - LocalizedError
+
+extension ApiSessionError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .illegalUrl(let url): return "Illegal URL '\(url)'"
+        case .host(let error): return error.localizedDescription
+        case .canceled: return "Canceled"
+        }
+    }
 }

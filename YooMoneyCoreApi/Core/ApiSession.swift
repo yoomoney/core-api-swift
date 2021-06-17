@@ -33,18 +33,23 @@ public class ApiSession {
         _ session: URLSession,
         _ challenge: URLAuthenticationChallenge,
         _ completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) -> Void)? {
-            didSet {
-                delegate.taskDidReceiveChallengeWithCompletion = taskDidReceiveChallengeWithCompletion
+            set {
+                urlSessionDelegate.taskDidReceiveChallengeWithCompletion = newValue
+            }
+            get {
+                urlSessionDelegate.taskDidReceiveChallengeWithCompletion
             }
     }
+
+    /// ApiSession delegate
+    public private(set) weak var delegate: ApiSessionDelegate?
 
     // MARK: - Private properties
 
     private let session: URLSession
-    private let delegate: ApiSessionDelegate
     private let hostProvider: HostProvider
     private let logger: TaskLogger?
-
+    private let urlSessionDelegate = UrlSessionDelegate()
     private let urlEncoding = QueryParametersEncoder()
     private let jsonEncoding = JsonParametersEncoder()
 
@@ -53,12 +58,16 @@ public class ApiSession {
     /// - Parameters:
     ///   - hostProvider: Host provider for all requests
     ///   - configuration: Instance of URLSessionConfiguration
+    ///   - delegate: Delegate object
     ///   - logger: Logger for API request-response
     ///
     /// Returns: Instance of ApiSession class
-    public init(hostProvider: HostProvider,
-                configuration: URLSessionConfiguration = .default,
-                logger: Logger? = nil) {
+    public init(
+        hostProvider: HostProvider,
+        configuration: URLSessionConfiguration = .default,
+        delegate: ApiSessionDelegate? = nil,
+        logger: Logger? = nil
+    ) {
         self.hostProvider = hostProvider
 
         let configurationHeaders
@@ -72,8 +81,8 @@ public class ApiSession {
                 additionalSessionHeaders: configuration.httpAdditionalHeaders as? [String: String]
             )
         }
-        self.delegate = ApiSessionDelegate()
-        self.session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        self.delegate = delegate
+        self.session = URLSession(configuration: configuration, delegate: urlSessionDelegate, delegateQueue: nil)
     }
 
     deinit {
@@ -90,12 +99,8 @@ public class ApiSession {
         let url: URL
         do {
             url = try self.url(for: apiMethod)
-        } catch let error as ApiSession.ErrorApiSession {
+        } catch let error {
             return Task(requestData: .left(error)).trace(with: logger)
-        } catch {
-            assertionFailure("Unexpected error: \(error)")
-            // swiftlint:disable:next force_unwrapping
-            url = URL(string: "https://yoomoney.ru")!
         }
 
         let task: Task<M.Response>
@@ -111,8 +116,16 @@ public class ApiSession {
             let requestData = RequestData(request: request)
 
             let dataTask = session.dataTask(
-                with: request) { (data: Data?, response: URLResponse?, error: Error?) -> Void in
-
+                with: request
+            ) { [weak self] (data: Data?, response: URLResponse?, error: Error?) -> Void in
+                guard let self = self else {
+                    requestData.error = ApiSessionError.canceled
+                    requestData.queue.isSuspended = false
+                    return
+                }
+                if let headers = (response as? HTTPURLResponse)?.allHeaderFields as? [String: String] {
+                    self.delegate?.apiSession(self, didReceiveResponseWith: Headers(headers))
+                }
                 requestData.data = data
                 requestData.response = response
                 requestData.error = error
@@ -138,19 +151,6 @@ public class ApiSession {
         }
     }
 
-    /// API Session errors
-    ///
-    /// - illegalUrl: Illegal URL
-    /// - host: host provider error
-    public enum ErrorApiSession: Error {
-
-        /// Illegal URL.
-        case illegalUrl(String)
-
-        /// Host provider error.
-        case host(HostProviderError)
-    }
-
     /// Makes default HTTP headers.
     @available(*, deprecated, message: "Use DefaultHeadersFactory instead")
     public static let defaultHTTPHeaders: Headers = DefaultHeadersFactory().makeHeaders()
@@ -170,7 +170,7 @@ private extension ApiSession {
 
     private func url(forHost host: String, andPath path: String) throws -> URL {
         guard let components = URLComponents(string: host) else {
-            throw ErrorApiSession.illegalUrl(host)
+            throw ApiSessionError.illegalUrl(host)
         }
         var resultComponents = components
         if resultComponents.scheme?.isEmpty != false {
@@ -178,19 +178,28 @@ private extension ApiSession {
         }
         resultComponents.path = path
         guard let url = resultComponents.url else {
-            throw ErrorApiSession.illegalUrl(host + path)
+            throw ApiSessionError.illegalUrl(host + path)
         }
         return url
     }
-}
 
-// MARK: - LocalizedError
+    final class UrlSessionDelegate: NSObject, URLSessionDelegate {
+        var taskDidReceiveChallengeWithCompletion: ((
+            URLSession,
+            URLAuthenticationChallenge,
+            @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+        ) -> Void)?
 
-extension ApiSession.ErrorApiSession: LocalizedError {
-    public var errorDescription: String? {
-        switch self {
-        case .illegalUrl(let url): return "Illegal URL '\(url)'"
-        case .host(let error): return error.localizedDescription
+        func urlSession(
+            _ session: URLSession,
+            didReceive challenge: URLAuthenticationChallenge,
+            completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+        ) {
+            guard taskDidReceiveChallengeWithCompletion == nil else {
+                taskDidReceiveChallengeWithCompletion?(session, challenge, completionHandler)
+                return
+            }
+            completionHandler(.performDefaultHandling, nil)
         }
     }
 }
